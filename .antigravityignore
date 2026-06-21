@@ -1,0 +1,20 @@
+# Loại bỏ thư mục ẩn và cấu hình ngầm của Astro CLI
+.astro/
+.astro-context-*
+
+# Loại bỏ các file logs phát sinh từ Airflow Webserver, Scheduler và Worker
+logs/
+*.log
+**/*.log
+
+# Loại bỏ môi trường ảo Python (nếu có tạo trong dự án)
+.venv/
+venv/
+env/
+__pycache__/
+*.pyc
+
+# Loại bỏ các file tạm của hệ thống và IDE
+.DS_Store
+.idea/
+.vscode/
