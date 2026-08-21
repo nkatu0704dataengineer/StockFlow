@@ -1,14 +1,12 @@
 #!/bin/bash
 
-export SPARK_HOME=/spark
+set -e
 
-. "/spark/sbin/spark-config.sh"
+export SPARK_HOME=/opt/spark
 
-. "/spark/bin/load-spark-env.sh"
+mkdir -p /opt/spark/logs
 
-mkdir -p $SPARK_WORKER_LOG
-
-ln -sf /dev/stdout $SPARK_WORKER_LOG/spark-worker.out
-
-/spark/sbin/../bin/spark-class org.apache.spark.deploy.worker.Worker \
-    --webui-port $SPARK_WORKER_WEBUI_PORT $SPARK_MASTER >> $SPARK_WORKER_LOG/spark-worker.out
+exec ${SPARK_HOME}/bin/spark-class \
+    org.apache.spark.deploy.worker.Worker \
+    --webui-port ${SPARK_WORKER_WEBUI_PORT:-8081} \
+    ${SPARK_MASTER}

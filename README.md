@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 Overview
 ========
 
@@ -43,3 +44,6 @@ Contact
 =======
 
 The Astronomer CLI is maintained with love by the Astronomer team. To report a bug or suggest a change, reach out to our support.
+=======
+# EcomFlow-Data-Platform-
+>>>>>>> f89bd382a24449fcf9b09f504438da5d91a54fa6
