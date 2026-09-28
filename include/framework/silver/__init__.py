@@ -1,1 +1,0 @@
-# Framework Silver Package

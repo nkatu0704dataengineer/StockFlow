@@ -1,49 +1,210 @@
-<<<<<<< HEAD
-Overview
-========
+# StockFlow - Real-Time Financial Data & Analytics Platform
 
-Welcome to Astronomer! This project was generated after you ran 'astro dev init' using the Astronomer CLI. This readme describes the contents of the project, as well as how to run Apache Airflow on your local machine.
+[![Python 3.9](https://img.shields.io/badge/Python-3.9-blue.svg?style=flat-square&logo=python)](https://www.python.org/)
+[![Apache Kafka](https://img.shields.io/badge/Apache%20Kafka-3.7.0-black.svg?style=flat-square&logo=apachekafka)](https://kafka.apache.org/)
+[![Delta Lake](https://img.shields.io/badge/Delta%20Lake-Enabled-005571.svg?style=flat-square&logo=databricks)](https://delta.io/)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1.svg?style=flat-square&logo=postgresql)](https://www.postgresql.org/)
+[![Metabase](https://img.shields.io/badge/Metabase-0.52.8-509EE3.svg?style=flat-square&logo=metabase)](https://www.metabase.com/)
+[![AWS S3](https://img.shields.io/badge/AWS%20S3-Cloud-FF9900.svg?style=flat-square&logo=amazons3)](https://aws.amazon.com/s3/)
 
-Project Contents
-================
+An enterprise-grade, real-time financial data platform implementing the **Medallion Lakehouse Architecture**. Designed to capture, process, aggregate, and visualize high-throughput stock and cryptocurrency trades using Finnhub WebSocket, Kafka, Delta Lake, PostgreSQL, and Metabase.
 
-Your Astro project contains the following files and folders:
+---
 
-- dags: This folder contains the Python files for your Airflow DAGs. By default, this directory includes one example DAG:
-    - `example_astronauts`: This DAG shows a simple ETL pipeline example that queries the list of astronauts currently in space from the Open Notify API and prints a statement for each astronaut. The DAG uses the TaskFlow API to define tasks in Python, and dynamic task mapping to dynamically print a statement for each astronaut. For more on how this DAG works, see our [Getting started tutorial](https://www.astronomer.io/docs/learn/get-started-with-airflow).
-- Dockerfile: This file contains a versioned Astro Runtime Docker image that provides a differentiated Airflow experience. If you want to execute other commands or overrides at runtime, specify them here.
-- include: This folder contains any additional files that you want to include as part of your project. It is empty by default.
-- packages.txt: Install OS-level packages needed for your project by adding them to this file. It is empty by default.
-- requirements.txt: Install Python packages needed for your project by adding them to this file. It is empty by default.
-- plugins: Add custom or community plugins for your project to this file. It is empty by default.
-- airflow_settings.yaml: Use this local-only file to specify Airflow Connections, Variables, and Pools instead of entering them in the Airflow UI as you develop DAGs in this project.
+## 1. System Architecture (Medallion Lakehouse)
 
-Deploy Your Project Locally
-===========================
+The platform strictly follows the Bronze-Silver-Gold medallion architecture to ensure data quality, resilience, and lightning-fast BI queries.
 
-Start Airflow on your local machine by running 'astro dev start'.
+```mermaid
+graph LR
+    subgraph Data_Ingestion ["1. Data Ingestion (Real-time)"]
+        GEN["Finnhub WebSocket API\n(Stock & Crypto Ticks)"]
+        PROD["Python Producer\n(Async, Buffered)"]
+        GEN -->|Raw JSON| PROD
+    end
 
-This command will spin up five Docker containers on your machine, each for a different Airflow component:
+    subgraph Kafka_Cluster ["2. Distributed Streaming"]
+        TOPIC[("Kafka Topic:\nfinnhub_realtime_trades")]
+        PROD -->|Produce Records| TOPIC
+    end
 
-- Postgres: Airflow's Metadata Database
-- Scheduler: The Airflow component responsible for monitoring and triggering tasks
-- DAG Processor: The Airflow component responsible for parsing DAGs
-- API Server: The Airflow component responsible for serving the Airflow UI and API
-- Triggerer: The Airflow component responsible for triggering deferred tasks
+    subgraph Medallion_Pipeline ["3. Medallion Lakehouse Pipeline"]
+        BRONZE["Bronze Stream\n(Raw Data)"]
+        SILVER["Silver Stream\n(Cleaned & Enriched)"]
+        GOLD["Gold Stream\n(Aggregated Data Mart)"]
+        
+        TOPIC -->|Consume| BRONZE
+        BRONZE -->|Write Parquet| S3B[AWS S3: bronze/]
+        S3B -.->|Poll| SILVER
+        SILVER -->|Write Delta Lake| S3S[AWS S3: silver/]
+        S3S -.->|Poll| GOLD
+        GOLD -->|Compute 1m OHLCV| PG[(PostgreSQL: stockflow_gold)]
+    end
 
-When all five containers are ready the command will open the browser to the Airflow UI at http://localhost:8080/. You should also be able to access your Postgres Database at 'localhost:5432/postgres' with username 'postgres' and password 'postgres'.
+    subgraph Analytics_BI ["4. Analytics & Dashboard"]
+        META["Metabase BI"]
+        PG -->|Query| META
+    end
 
-Note: If you already have either of the above ports allocated, you can either [stop your existing Docker containers or change the port](https://www.astronomer.io/docs/astro/cli/troubleshoot-locally#ports-are-not-available-for-my-local-airflow-webserver).
+    style GEN fill:#f9f9f9,stroke:#333,stroke-width:1px
+    style PROD fill:#e1f5fe,stroke:#0288d1,stroke-width:1.5px
+    style TOPIC fill:#fff3e0,stroke:#f57c00,stroke-width:2px
+    style BRONZE fill:#cd7f32,stroke:#8b4513,stroke-width:1.5px
+    style SILVER fill:#e0e0e0,stroke:#808080,stroke-width:1.5px
+    style GOLD fill:#fff8dc,stroke:#daa520,stroke-width:1.5px
+    style PG fill:#e0f2f1,stroke:#00796b,stroke-width:2px
+    style META fill:#fffde7,stroke:#fbc02d,stroke-width:2px
+```
 
-Deploy Your Project to Astronomer
-=================================
+---
 
-If you have an Astronomer account, pushing code to a Deployment on Astronomer is simple. For deploying instructions, refer to Astronomer documentation: https://www.astronomer.io/docs/astro/deploy-code/
+## 2. Core Data Engineering Highlights
 
-Contact
-=======
+### 🥉 Bronze Layer: Infinite Raw Storage
+- **Format:** Apache Parquet (Columnar, highly compressed).
+- **Partitioning:** `year=YYYY/month=MM/day=DD`.
+- **Purpose:** Immutable append-only storage of raw tick data directly from Kafka. Ensures zero data loss and enables historical replay.
 
-The Astronomer CLI is maintained with love by the Astronomer team. To report a bug or suggest a change, reach out to our support.
-=======
-# EcomFlow-Data-Platform-
->>>>>>> f89bd382a24449fcf9b09f504438da5d91a54fa6
+### 🥈 Silver Layer: ACID Lakehouse
+- **Format:** **Delta Lake** (via `deltalake` Python bindings).
+- **Processing:** Deduplication, schema enforcement, filtering out invalid negative prices or zero volumes.
+- **Purpose:** Provides a reliable, clean, and queryable data lake. Delta Lake prevents schema evolution issues (e.g., Pandas categorical inference bugs) and allows time-travel queries.
+
+### 🥇 Gold Layer: Real-Time Data Mart
+- **Format:** PostgreSQL Relational Database (`ohlcv_1m` table).
+- **Processing:** Transforms raw ticks into 1-minute **OHLCV** (Open, High, Low, Close, Volume) candles + VWAP (Volume-Weighted Average Price) + Tick counts.
+- **Purpose:** Blazing fast Ad-hoc queries and dashboarding. Uses `ON CONFLICT DO UPDATE` (UPSERT) to handle real-time window updates deterministically.
+
+---
+
+## 3. Technology Stack
+
+| Layer | Component | Technology | Purpose |
+| :--- | :--- | :--- | :--- |
+| **Language** | Core Runtime | Python 3.9 | Pipeline scripting & aggregation (Pandas, PyArrow) |
+| **Ingestion** | API Source | Finnhub WebSocket | Real-time US Equities and Crypto tick data |
+| **Streaming** | Event Broker | Apache Kafka | High-throughput distributed message log |
+| **Bronze Storage** | Object Store | AWS S3 + Parquet | Cheap, durable raw data retention |
+| **Silver Storage** | Lakehouse | Delta Lake (S3) | ACID transactions, schema enforcement |
+| **Gold Storage** | RDBMS | PostgreSQL 16 | Fast querying for structured OHLCV data mart |
+| **Visualization** | BI Tool | Metabase | Drag-and-drop live dashboards & charts |
+| **Infrastructure** | Containerization | Docker Compose | Local orchestration for Kafka, Postgres, Metabase |
+
+---
+
+## 4. Repository Structure
+
+```text
+StockFlow/
+├── docker-compose.yml              # Local infrastructure (Kafka, Postgres, Metabase)
+├── .env.example                    # Template for API keys and database credentials
+├── requirements.txt                # Python dependencies
+├── src/
+│   ├── config/
+│   │   └── settings.py             # Centralized environment configurations
+│   ├── ingestion/
+│   │   └── finnhub_producer.py     # Async WebSocket consumer -> Kafka Producer
+│   └── streaming/
+│       ├── bronze_stream.py        # Kafka Consumer -> S3 Parquet (Micro-batching)
+│       ├── silver_stream.py        # S3 Parquet -> Delta Lake (Deduplication & Cleaning)
+│       └── gold_stream.py          # Delta Lake -> PostgreSQL (OHLCV Aggregation)
+└── README.md                       # Comprehensive project documentation
+```
+
+---
+
+## 5. Getting Started & Setup Guide
+
+### Prerequisites
+- **Python**: Version 3.9+
+- **Docker & Docker Compose**: Installed and running
+- **Finnhub API Key**: Free tier available at [finnhub.io](https://finnhub.io/)
+- **AWS S3 Bucket**: Configured with proper IAM access keys
+
+### Step 1: Environment Configuration
+Create a `.env` file in the root directory and populate it:
+```env
+# Finnhub API
+FINNHUB_API_KEY=your_api_key_here
+
+# Kafka
+KAFKA_BOOTSTRAP_SERVERS=localhost:9094
+
+# AWS S3 (Lakehouse)
+AWS_ACCESS_KEY_ID=your_aws_key
+AWS_SECRET_ACCESS_KEY=your_aws_secret
+S3_BUCKET_NAME=stockflow-lakehouse
+S3_REGION=ap-southeast-2
+
+# PostgreSQL (Gold Layer)
+POSTGRES_HOST=localhost
+POSTGRES_PORT=5433
+POSTGRES_DB=stockflow_gold
+POSTGRES_USER=stockflow
+POSTGRES_PASSWORD=stockflow2026
+
+# Watchlist
+WATCHLIST=AAPL,MSFT,GOOGL,AMZN,NVDA,TSLA,META,BINANCE:BTCUSDT
+```
+
+### Step 2: Launch Infrastructure Containers
+Spin up Kafka, Kafka-UI, PostgreSQL, and Metabase:
+```bash
+docker compose up -d
+```
+Verify endpoints:
+- **Kafka-UI**: `http://localhost:8085`
+- **Metabase**: `http://localhost:3030`
+- **PostgreSQL**: `localhost:5433`
+
+### Step 3: Install Python Dependencies
+```bash
+python -m venv .venv
+# Activate venv: .venv\Scripts\activate (Windows) or source .venv/bin/activate (Linux/Mac)
+pip install -r requirements.txt
+```
+
+### Step 4: Run the Medallion Pipeline
+Run each of these scripts in separate terminal windows (or as background processes):
+
+**1. Start the Producer (Finnhub -> Kafka):**
+```bash
+python -m src.ingestion.finnhub_producer
+```
+
+**2. Start Bronze Stream (Kafka -> S3 Parquet):**
+```bash
+python -m src.streaming.bronze_stream
+```
+
+**3. Start Silver Stream (S3 Parquet -> Delta Lake):**
+```bash
+python -m src.streaming.silver_stream
+```
+
+**4. Start Gold Stream (Delta Lake -> PostgreSQL):**
+```bash
+python -m src.streaming.gold_stream
+```
+
+### Step 5: Configure Metabase Live Dashboard
+1. Open **[http://localhost:3030](http://localhost:3030)** and set up an admin account.
+2. Add a Database connection:
+   - Type: **PostgreSQL**
+   - Host: `postgres` *(Docker internal network)*
+   - Port: `5432`
+   - Database: `stockflow_gold`
+   - User: `stockflow` / Password: `stockflow2026`
+3. Create a **SQL Query** to fetch real-time price & volume:
+   ```sql
+   SELECT window_start, close AS price, volume
+   FROM ohlcv_1m
+   WHERE symbol = 'BINANCE:BTCUSDT'
+   ORDER BY window_start ASC
+   ```
+4. Visualize as a combination Line + Bar chart.
+
+---
+
+## 6. License & Attribution
+Developed as an **Enterprise Data Engineering & Medallion Architecture Showcase**.

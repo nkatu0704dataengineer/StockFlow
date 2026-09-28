@@ -1,12 +1,20 @@
-.git
-.env
-.DS_Store
-airflow_settings.yaml
+﻿# Python
 __pycache__/
-astro
-.venv
-.astro/standalone/
-airflow-webserver.pid
-webserver_config.py
-airflow.cfg
-airflow.db
+*.py[cod]
+*.egg-info/
+.venv/
+
+# Environment
+.env
+
+# Data volumes (Docker)
+data/kafka/
+data/metabase/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
