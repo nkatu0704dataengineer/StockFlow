@@ -1,20 +1,14 @@
-﻿# Python
-__pycache__/
-*.py[cod]
-*.egg-info/
+# Virtual environment
 .venv/
+venv/
+env/
 
-# Environment
+# Python cache
+__pycache__/
+*.pyc
+
+# Environment variables
 .env
 
-# Data volumes (Docker)
-data/kafka/
-data/metabase/
-
-# IDE
-.vscode/
-.idea/
-
-# OS
-.DS_Store
-Thumbs.db
+# Data volumes
+data/
