@@ -1,5 +1,4 @@
 ﻿# Streaming Processing
-pyspark==3.5.0
 delta-spark==3.1.0
 
 # Real-time Message Broker
@@ -20,3 +19,7 @@ s3fs==2023.12.2
 
 # Utilities
 python-dotenv==1.0.0
+
+# Parquet Engine
+pyarrow==15.0.0
+

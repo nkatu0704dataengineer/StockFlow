@@ -47,7 +47,8 @@ SILVER_URI = f"s3://{S3_BUCKET_NAME}/silver/trades"
 STORAGE_OPTIONS = {
     "AWS_ACCESS_KEY_ID": AWS_ACCESS_KEY_ID,
     "AWS_SECRET_ACCESS_KEY": AWS_SECRET_ACCESS_KEY,
-    "AWS_REGION": S3_REGION
+    "AWS_REGION": S3_REGION,
+    "AWS_S3_ALLOW_UNSAFE_RENAME": "true"
 }
 
 s3_client = boto3.client(
@@ -119,7 +120,17 @@ def process_files(file_keys: List[str]) -> bool:
     try:
         for key in file_keys:
             s3_uri = f"s3://{S3_BUCKET_NAME}/{key}"
-            dfs.append(pd.read_parquet(s3_uri, storage_options=s3fs_options))
+            df_part = pd.read_parquet(s3_uri, storage_options=s3fs_options)
+            
+            # Extract partition columns from Hive-styled S3 key
+            parts = key.split('/')
+            for p in parts:
+                if '=' in p:
+                    k, v = p.split('=')
+                    if k in ['year', 'month', 'day']:
+                        df_part[k] = v
+                        
+            dfs.append(df_part)
         df = pd.concat(dfs, ignore_index=True)
     except Exception as e:
         logger.error(f"Error reading bronze files: {e}")

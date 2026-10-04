@@ -1,23 +1,22 @@
 """
-Gold Stream Processor - Pure Python (Pandas + DeltaLake + PostgreSQL)
+Gold Stream Processor - PySpark Structured Streaming
 
-Reads cleaned trade data from the Silver layer (Delta Lake on S3),
-aggregates into 1-minute OHLCV candles, computes technical indicators
-(VWAP, tick count), and writes results to PostgreSQL for Dashboard consumption.
+Reads raw trade data from the Silver layer (Delta Lake on S3),
+aggregates into 1-minute OHLCV candles using PySpark Stateful Streaming
+with Watermarking, and writes results to PostgreSQL using foreachBatch.
+This architecture prevents Out-Of-Memory (OOM) issues and scales infinitely.
 """
 
-import logging
 import os
-import signal
-import sys
-import time
-from datetime import datetime, timezone
-from typing import Any, Optional
+os.environ['HADOOP_HOME'] = r'C:\hadoop'
+os.environ['PATH'] = r'C:\hadoop\bin;' + os.environ.get('PATH', '')
 
-import pandas as pd
+import logging
+import sys
 import psycopg2
 from psycopg2.extras import execute_values
-from deltalake import DeltaTable
+from pyspark.sql import SparkSession
+import pyspark.sql.functions as F
 
 from src.config.settings import (
     AWS_ACCESS_KEY_ID,
@@ -44,14 +43,9 @@ logger = logging.getLogger("stockflow.streaming.gold")
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-POLL_INTERVAL_SEC = 30
-SILVER_URI = f"s3://{S3_BUCKET_NAME}/silver/trades"
-
-STORAGE_OPTIONS = {
-    "AWS_ACCESS_KEY_ID": AWS_ACCESS_KEY_ID,
-    "AWS_SECRET_ACCESS_KEY": AWS_SECRET_ACCESS_KEY,
-    "AWS_REGION": S3_REGION
-}
+# PySpark requires s3a:// for AWS S3
+SILVER_URI = f"s3a://{S3_BUCKET_NAME}/silver/trades"
+CHECKPOINT_DIR = f"s3a://{S3_BUCKET_NAME}/checkpoints/gold_stream"
 
 # ---------------------------------------------------------------------------
 # PostgreSQL Setup
@@ -92,9 +86,7 @@ ON CONFLICT (symbol, window_start) DO UPDATE SET
     created_at = NOW()
 """
 
-
 def get_pg_connection():
-    """Create a PostgreSQL connection."""
     return psycopg2.connect(
         host=POSTGRES_HOST,
         port=POSTGRES_PORT,
@@ -103,9 +95,7 @@ def get_pg_connection():
         password=POSTGRES_PASSWORD
     )
 
-
 def init_database():
-    """Create tables and indexes if they don't exist."""
     conn = get_pg_connection()
     try:
         with conn.cursor() as cur:
@@ -115,74 +105,19 @@ def init_database():
     finally:
         conn.close()
 
-
-def get_last_processed_time() -> Optional[datetime]:
-    """Get the latest window_start from PostgreSQL to avoid reprocessing."""
-    conn = get_pg_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT MAX(window_start) FROM ohlcv_1m;")
-            result = cur.fetchone()
-            return result[0] if result and result[0] else None
-    finally:
-        conn.close()
-
-
 # ---------------------------------------------------------------------------
-# OHLCV Aggregation Logic
+# ForeachBatch Writer
 # ---------------------------------------------------------------------------
-def compute_ohlcv(df: pd.DataFrame) -> pd.DataFrame:
+def write_to_postgres_foreach(batch_df, batch_id):
     """
-    Aggregate tick-level trades into 1-minute OHLCV candles.
-    
-    Input columns: symbol, price, volume, trade_time, asset_class
-    Output columns: symbol, asset_class, window_start, open, high, low, close, volume, vwap, tick_count
+    This function is called by Spark for each micro-batch.
+    Since the batch contains only the aggregated 1-minute candles,
+    it is extremely small and safe to convert to Pandas for quick UPSERT.
     """
-    if df.empty:
-        return pd.DataFrame()
+    pdf = batch_df.toPandas()
+    if pdf.empty:
+        return
     
-    # Ensure trade_time is datetime
-    if not pd.api.types.is_datetime64_any_dtype(df["trade_time"]):
-        df["trade_time"] = pd.to_datetime(df["trade_time"])
-    
-    # Remove timezone info for grouping (PostgreSQL TIMESTAMP without tz)
-    if df["trade_time"].dt.tz is not None:
-        df["trade_time"] = df["trade_time"].dt.tz_localize(None)
-    
-    # Floor to 1-minute window
-    df["window_start"] = df["trade_time"].dt.floor("1min")
-    
-    # Calculate VWAP components
-    df["pv"] = df["price"] * df["volume"]
-    
-    # Group by symbol + 1-minute window
-    agg = df.groupby(["symbol", "asset_class", "window_start"]).agg(
-        open=("price", "first"),
-        high=("price", "max"),
-        low=("price", "min"),
-        close=("price", "last"),
-        volume=("volume", "sum"),
-        pv_sum=("pv", "sum"),
-        tick_count=("price", "count")
-    ).reset_index()
-    
-    # VWAP = sum(price * volume) / sum(volume)
-    agg["vwap"] = agg["pv_sum"] / agg["volume"]
-    agg["vwap"] = agg["vwap"].round(6)
-    agg.drop(columns=["pv_sum"], inplace=True)
-    
-    return agg
-
-
-# ---------------------------------------------------------------------------
-# Write to PostgreSQL
-# ---------------------------------------------------------------------------
-def write_to_postgres(df_ohlcv: pd.DataFrame) -> int:
-    """Upsert OHLCV candles into PostgreSQL. Returns number of rows written."""
-    if df_ohlcv.empty:
-        return 0
-    
-    # Prepare tuples for execute_values
     records = [
         (
             row["symbol"],
@@ -193,10 +128,10 @@ def write_to_postgres(df_ohlcv: pd.DataFrame) -> int:
             round(row["low"], 6),
             round(row["close"], 6),
             round(row["volume"], 6),
-            row["vwap"],
+            round(row["vwap"], 6) if row["vwap"] else 0.0,
             row["tick_count"]
         )
-        for _, row in df_ohlcv.iterrows()
+        for _, row in pdf.iterrows()
     ]
     
     conn = get_pg_connection()
@@ -204,121 +139,95 @@ def write_to_postgres(df_ohlcv: pd.DataFrame) -> int:
         with conn.cursor() as cur:
             execute_values(cur, UPSERT_SQL, records)
         conn.commit()
-        return len(records)
+        logger.info(f"Batch {batch_id}: Upserted {len(records)} candles to PostgreSQL (Symbols: {pdf['symbol'].nunique()}).")
+    except Exception as e:
+        logger.error(f"Batch {batch_id}: Error writing to PostgreSQL: {e}")
     finally:
         conn.close()
 
-
 # ---------------------------------------------------------------------------
-# Main Loop
+# Main Spark Application
 # ---------------------------------------------------------------------------
 def run_gold_stream():
-    """Main processing loop: Silver (Delta Lake) -> OHLCV -> PostgreSQL."""
-    
-    # Initialize database tables
     init_database()
     
-    running = True
+    # Initialize Spark Session configured for Delta and S3
+    logger.info("Initializing PySpark Session...")
+    spark = (SparkSession.builder
+        .appName("GoldStream_PySpark")
+        .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
+        .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
+        # Add packages for Delta and AWS S3
+        .config("spark.jars.packages", "io.delta:delta-spark_2.12:3.1.0,org.apache.hadoop:hadoop-aws:3.3.4")
+        # AWS Credentials
+        .config("spark.hadoop.fs.s3a.access.key", AWS_ACCESS_KEY_ID)
+        .config("spark.hadoop.fs.s3a.secret.key", AWS_SECRET_ACCESS_KEY)
+        .config("spark.hadoop.fs.s3a.endpoint", f"s3.{S3_REGION}.amazonaws.com")
+        .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
+        # Performance tuning for streaming
+        .config("spark.sql.shuffle.partitions", "4")
+        .getOrCreate()
+    )
     
-    def _signal_handler(signum: int, frame: Any) -> None:
-        nonlocal running
-        logger.info("Received stop signal, shutting down gracefully...")
-        running = False
+    # Supress noisy Spark logs
+    spark.sparkContext.setLogLevel("WARN")
     
-    signal.signal(signal.SIGINT, _signal_handler)
-    signal.signal(signal.SIGTERM, _signal_handler)
+    logger.info("Reading Silver Delta Lake stream...")
+    # 1. Read Stream from Silver Delta Lake
+    df = spark.readStream.format("delta").load(SILVER_URI)
     
-    logger.info("Gold Stream started. Polling Silver Delta Lake for new data...")
+    # Convert trade_time to timestamp (Delta Lake might store it as string/timestamp)
+    df = df.withColumn("trade_time_ts", F.to_timestamp(F.col("trade_time")))
     
-    last_version = -1
+    # 2. Stateful Aggregation (1-minute candles)
+    # Using withWatermark allows Spark to drop old data from memory, preventing OOM
+    agg_df = (df
+        .withWatermark("trade_time_ts", "5 minutes")
+        .groupBy(
+            F.window(F.col("trade_time_ts"), "1 minute"),
+            F.col("symbol"),
+            F.col("asset_class")
+        )
+        .agg(
+            # Open: First price (min trade_time)
+            F.min(F.struct(F.col("trade_time_ts"), F.col("price"))).getField("price").alias("open"),
+            # High: Max price
+            F.max(F.col("price")).alias("high"),
+            # Low: Min price
+            F.min(F.col("price")).alias("low"),
+            # Close: Last price (max trade_time)
+            F.max(F.struct(F.col("trade_time_ts"), F.col("price"))).getField("price").alias("close"),
+            # Volume: Sum of volumes
+            F.sum(F.col("volume")).alias("volume"),
+            # VWAP = Sum(Price * Volume) / Sum(Volume)
+            (F.sum(F.col("price") * F.col("volume")) / F.sum(F.col("volume"))).alias("vwap"),
+            # Tick count
+            F.count("*").alias("tick_count")
+        )
+        # Extract the start time of the window as the window_start column
+        .withColumn("window_start", F.col("window.start"))
+        .drop("window")
+    )
     
-    while running:
-        try:
-            # 1. Read from Silver Delta Lake
-            dt = DeltaTable(SILVER_URI, storage_options=STORAGE_OPTIONS)
-            current_version = dt.version()
-            
-            if current_version == last_version:
-                logger.debug(f"No new data (version={current_version}). Waiting...")
-                for _ in range(POLL_INTERVAL_SEC):
-                    if not running:
-                        break
-                    time.sleep(1)
-                continue
-            
-            logger.info(f"New Delta version detected: {last_version} -> {current_version}")
-            
-            # Read entire Silver table
-            df = dt.to_pandas(
-                columns=["symbol", "price", "volume", "trade_time", "asset_class"]
-            )
-            
-            if df.empty:
-                logger.warning("Silver Delta table is empty.")
-                last_version = current_version
-                continue
-            
-            logger.info(f"Read {len(df)} records from Silver Delta Lake.")
-            
-            # 2. Only process data newer than what we already have in PostgreSQL
-            last_processed = get_last_processed_time()
-            if last_processed:
-                # Normalize trade_time: strip tz, cast to datetime64[ns]
-                if df["trade_time"].dt.tz is not None:
-                    df["trade_time"] = df["trade_time"].dt.tz_localize(None)
-                df["trade_time"] = df["trade_time"].astype("datetime64[ns]")
-                # Convert cutoff to numpy datetime64 for guaranteed compatibility
-                import numpy as np
-                cutoff = np.datetime64(str(last_processed))
-                df = df[df["trade_time"].values > cutoff]
-                logger.info(f"After filtering already-processed: {len(df)} new records.")
-            
-            if df.empty:
-                logger.info("No new records to process.")
-                last_version = current_version
-                for _ in range(POLL_INTERVAL_SEC):
-                    if not running:
-                        break
-                    time.sleep(1)
-                continue
-            
-            # 3. Compute OHLCV candles
-            df_ohlcv = compute_ohlcv(df)
-            
-            if df_ohlcv.empty:
-                last_version = current_version
-                continue
-            
-            # 4. Write to PostgreSQL
-            rows_written = write_to_postgres(df_ohlcv)
-            logger.info(
-                f"Gold Layer updated | "
-                f"Candles: {rows_written} | "
-                f"Symbols: {df_ohlcv['symbol'].nunique()} | "
-                f"Time range: {df_ohlcv['window_start'].min()} -> {df_ohlcv['window_start'].max()}"
-            )
-            
-            last_version = current_version
-            
-        except Exception as e:
-            logger.error(f"Error in Gold Stream: {e}")
-        
-        # Sleep before next poll
-        for _ in range(POLL_INTERVAL_SEC):
-            if not running:
-                break
-            time.sleep(1)
+    # 3. Write Stream to PostgreSQL using foreachBatch
+    logger.info("Starting Streaming Query to PostgreSQL...")
+    query = (agg_df.writeStream
+        .outputMode("update")
+        .foreachBatch(write_to_postgres_foreach)
+        .option("checkpointLocation", CHECKPOINT_DIR)
+        .trigger(processingTime="30 seconds")
+        .start()
+    )
     
-    logger.info("Gold Stream stopped.")
-
+    query.awaitTermination()
 
 if __name__ == "__main__":
     if not AWS_ACCESS_KEY_ID or not AWS_SECRET_ACCESS_KEY:
         logger.error("AWS credentials missing in .env file!")
         sys.exit(1)
-    
+        
     if not POSTGRES_HOST or not POSTGRES_PASSWORD:
         logger.error("PostgreSQL credentials missing in .env file!")
         sys.exit(1)
-    
+        
     run_gold_stream()

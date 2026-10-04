@@ -1,40 +1,36 @@
 version: '3.8'
-
 services:
   kafka:
     image: confluentinc/confluent-local:7.5.0
     container_name: stockflow-kafka
+    user: root
     ports:
-      - "9094:9094"
-      - "8082:8082"
+    - 9094:9094
+    - 8082:8082
     environment:
-      KAFKA_ADVERTISED_LISTENERS: 'PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9094'
-      KAFKA_CONTROLLER_QUORUM_VOTERS: '1@localhost:29093'
-      KAFKA_LISTENERS: 'PLAINTEXT://0.0.0.0:29092,CONTROLLER://0.0.0.0:29093,PLAINTEXT_HOST://0.0.0.0:9094'
-    volumes:
-      - ./data/kafka:/var/lib/kafka/data
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9094
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:29093
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:29092,CONTROLLER://0.0.0.0:29093,PLAINTEXT_HOST://0.0.0.0:9094
     networks:
-      - stockflow_net
-
+    - stockflow_net
   postgres:
     image: postgres:16-alpine
     container_name: stockflow-postgres
     ports:
-      - "5433:5432"
+    - 5433:5432
     environment:
       POSTGRES_USER: stockflow
       POSTGRES_PASSWORD: stockflow2026
       POSTGRES_DB: stockflow_gold
     volumes:
-      - ./data/postgres:/var/lib/postgresql/data
+    - ./data/postgres:/var/lib/postgresql/data
     networks:
-      - stockflow_net
-
+    - stockflow_net
   metabase:
     image: metabase/metabase:v0.52.8.4
     container_name: stockflow-metabase
     ports:
-      - "3030:3000"
+    - 3030:3000
     environment:
       MB_DB_TYPE: postgres
       MB_DB_DBNAME: stockflow_gold
@@ -43,25 +39,97 @@ services:
       MB_DB_PASS: stockflow2026
       MB_DB_HOST: postgres
     volumes:
-      - ./data/metabase:/metabase-data
+    - ./data/metabase:/metabase-data
     depends_on:
-      - postgres
+    - postgres
     networks:
-      - stockflow_net
-
+    - stockflow_net
   kafka-ui:
     image: provectuslabs/kafka-ui:latest
     container_name: stockflow-kafka-ui
+    user: root
     ports:
-      - "8085:8080"
+    - 8085:8080
     environment:
       KAFKA_CLUSTERS_0_NAME: stockflow-cluster
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
     depends_on:
-      - kafka
+    - kafka
     networks:
-      - stockflow_net
-
+    - stockflow_net
+  producer:
+    build:
+      context: .
+      dockerfile: Dockerfile.stream
+    container_name: stockflow-producer
+    command: python -m src.ingestion.finnhub_producer
+    env_file: .env
+    volumes:
+    - .:/app
+    depends_on:
+    - kafka
+    networks:
+    - stockflow_net
+    restart: unless-stopped
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: '5432'
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+  bronze-stream:
+    build:
+      context: .
+      dockerfile: Dockerfile.stream
+    container_name: stockflow-bronze
+    command: python -m src.streaming.bronze_stream
+    env_file: .env
+    volumes:
+    - .:/app
+    depends_on:
+    - kafka
+    networks:
+    - stockflow_net
+    restart: unless-stopped
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: '5432'
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+  silver-stream:
+    build:
+      context: .
+      dockerfile: Dockerfile.stream
+    container_name: stockflow-silver
+    command: python -m src.streaming.silver_stream
+    env_file: .env
+    volumes:
+    - .:/app
+    depends_on:
+    - kafka
+    networks:
+    - stockflow_net
+    restart: unless-stopped
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: '5432'
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+  gold-stream:
+    build:
+      context: .
+      dockerfile: Dockerfile.stream
+    container_name: stockflow-gold
+    command: python -m src.streaming.gold_stream
+    env_file: .env
+    volumes:
+    - .:/app
+    depends_on:
+    - postgres
+    - kafka
+    networks:
+    - stockflow_net
+    restart: unless-stopped
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: '5432'
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
 networks:
   stockflow_net:
     driver: bridge
