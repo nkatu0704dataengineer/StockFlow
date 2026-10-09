@@ -217,5 +217,23 @@ This project is deeply integrated with Apache Airflow. Airflow containers should
 
 ---
 
-## 6. License & Attribution
+## 6. Enterprise Observability (TIG Stack)
+
+Mặc dù đây là một dự án cá nhân, hệ thống được thiết kế với tư duy và tiêu chuẩn của một hệ thống **Enterprise-grade Data Platform**. Điểm nhấn chính là hệ sinh thái giám sát (Observability) độc lập thông qua **TIG Stack (Telegraf, InfluxDB, Grafana)**.
+
+Thay vì phải tự xây dựng toàn bộ hạ tầng giám sát từ đầu, StockFlow được tích hợp chặt chẽ để "dùng chung" (shared ecosystem) InfluxDB và Grafana từ dự án **EcomFlow**. 
+
+**Kiến trúc giám sát (Observability Architecture):**
+1. **Telegraf Agent**: Chạy dưới quyền root (privileged) ngay bên trong Docker Compose của StockFlow. Nó liên tục thu thập metrics của hệ thống máy chủ (CPU, RAM, Disk I/O) và Docker metrics, sau đó đẩy về InfluxDB của EcomFlow thông qua Docker network (`ecomflow-observability`).
+2. **Grafana Dashboards**: Tất cả bảng điều khiển giám sát được quản lý tập trung và Provisioning bằng Code (Dashboard as Code) trên Grafana của EcomFlow.
+
+**Hai Dashboard cốt lõi của StockFlow:**
+- 📊 **StockFlow Pipeline Monitor**: Cung cấp bức tranh toàn cảnh về sức khỏe của hạ tầng Docker (Kafka, Spark Streaming, Postgres...). Điều này đảm bảo rằng chúng ta có thể phát hiện ngay các hiện tượng "cổ chai" (bottleneck), rò rỉ bộ nhớ (memory leak), hoặc downtime của container trước khi dữ liệu bị mất.
+- ❤️ **StockFlow Data Pulse**: Bảng điều khiển "nhịp tim" của dữ liệu thời gian thực. Bằng cách query trực tiếp vào PostgreSQL Gold Layer (qua Data Source được kết nối), dashboard này giám sát tốc độ dòng chảy (flow rate) của 40 mã Cổ phiếu và 10 mã Crypto mới nhất. Bất kỳ sự sụt giảm hay "No Data" nào cũng sẽ được hiển thị ngay lập tức, giúp đảm bảo tính toàn vẹn và Real-time SLA của dữ liệu tài chính.
+
+Quyết định thiết kế này đảm bảo StockFlow không chỉ "chạy được" mà còn "vận hành bền bỉ", mang lại khả năng chẩn đoán sự cố nhanh chóng - yếu tố sống còn trong hệ thống giao dịch tài chính tốc độ cao.
+
+---
+
+## 7. License & Attribution
 Developed as an **Enterprise Data Engineering & Medallion Architecture Showcase**.

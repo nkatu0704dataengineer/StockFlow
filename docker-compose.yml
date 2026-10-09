@@ -130,6 +130,26 @@ services:
       POSTGRES_HOST: postgres
       POSTGRES_PORT: '5432'
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+  telegraf:
+    image: telegraf:latest
+    container_name: stockflow-telegraf
+    environment:
+      INFLUXDB_URL: http://ecomflow-influxdb:8086
+      INFLUXDB_TOKEN: 5_l720hwU8A1CC1T-7dn3EsAC7EsAYJstLlxhBeD3ewmoKvJJT5H3x3Yi227jnb6XeJu1OaErvJds3Z5xIm-sQ==
+      INFLUXDB_ORG: ecomflow
+      INFLUXDB_BUCKET: stockflow_metrics
+    volumes:
+    - ./telegraf.conf:/etc/telegraf/telegraf.conf:ro
+    - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+    - stockflow_net
+    - ecomflow-observability
+    restart: unless-stopped
+    user: root
+    privileged: true
 networks:
   stockflow_net:
     driver: bridge
+  ecomflow-observability:
+    external: true
+    name: ecomflow-observability
